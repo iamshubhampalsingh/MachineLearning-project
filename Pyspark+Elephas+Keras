@@ -1,0 +1,70 @@
+from pyspark.sql import SparkSession
+from pyspark.ml.image import ImageSchema
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import StringIndexer
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+from elephas.ml_model import ElephasEstimator
+from elephas.utils.rdd_utils import to_simple_rdd
+
+# Initialize Spark session
+spark = SparkSession.builder \
+    .appName("Deepfake Detection") \
+    .getOrCreate()
+
+# Define dataset path
+dataset_path = "file:///path/to/your/dataset"
+
+# Load images into Spark DataFrame
+image_df = ImageSchema.readImages(dataset_path) \
+    .withColumn("label", F.when(F.col("image.origin").contains("deepfake"), 1).otherwise(0))
+
+# Split dataset into training and validation sets
+train_df, validation_df = image_df.randomSplit([0.8, 0.2], seed=42)
+
+# Define model architecture
+model = Sequential()
+model.add(Conv2D(32, (3, 3), activation='relu', input_shape=(128, 128, 3)))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Conv2D(64, (3, 3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Conv2D(128, (3, 3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Flatten())
+model.add(Dense(128, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(1, activation='sigmoid'))
+
+# Compile the model
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# Convert Spark DataFrame to RDD
+train_rdd = to_simple_rdd(spark, train_df, categorical=False)
+validation_rdd = to_simple_rdd(spark, validation_df, categorical=False)
+
+# Define Elephas estimator
+elephas_model = ElephasEstimator()
+elephas_model.set_keras_model_config(model.to_yaml())
+elephas_model.set_optimizer_config(optimizer='adam')
+elephas_model.set_mode('synchronous')
+elephas_model.set_loss('binary_crossentropy')
+elephas_model.set_metrics(['accuracy'])
+elephas_model.set_epochs(10)
+elephas_model.set_batch_size(32)
+elephas_model.set_validation_split(0.1)
+
+# Train model
+fitted_model = elephas_model.fit(train_rdd)
+
+# Evaluate model on validation set
+evaluator = BinaryClassificationEvaluator(labelCol="label")
+accuracy = evaluator.evaluate(fitted_model.transform(validation_rdd))
+
+# Print accuracy
+print("Accuracy:", accuracy)
+
+# Save model
+fitted_model.save("deepfake_detection_model_spark")
+
+# Stop Spark session
+spark.stop()
