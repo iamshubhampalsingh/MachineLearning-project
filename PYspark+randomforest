@@ -1,0 +1,43 @@
+from pyspark.sql import SparkSession
+from pyspark.ml.image import ImageSchema
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import StringIndexer
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+
+# Initialize Spark session
+spark = SparkSession.builder \
+    .appName("Deepfake Detection") \
+    .getOrCreate()
+
+# Define dataset path
+dataset_path = "file:///path/to/your/dataset"
+
+# Load images into Spark DataFrame
+image_df = ImageSchema.readImages(dataset_path) \
+    .withColumn("label", F.when(F.col("image.origin").contains("deepfake"), 1).otherwise(0))
+
+# Split dataset into training and validation sets
+train_df, validation_df = image_df.randomSplit([0.8, 0.2], seed=42)
+
+# Define model pipeline
+indexer = StringIndexer(inputCol="label", outputCol="indexedLabel")
+rf = RandomForestClassifier(labelCol="indexedLabel", featuresCol="features")
+pipeline = Pipeline(stages=[indexer, rf])
+
+# Train model
+model = pipeline.fit(train_df)
+
+# Evaluate model on validation set
+predictions = model.transform(validation_df)
+evaluator = BinaryClassificationEvaluator(labelCol="indexedLabel")
+accuracy = evaluator.evaluate(predictions)
+
+# Print accuracy
+print("Accuracy:", accuracy)
+
+# Save model
+model.save("deepfake_detection_model_spark")
+
+# Stop Spark session
+spark.stop()
